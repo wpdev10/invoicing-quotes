@@ -1822,4 +1822,16 @@ class Wpinv_Quotes_Admin
             }
         }
     }
+
+    function wpinv_quote_tools_import_type_options($types){
+        $types['quotes'] = __('Quotes', 'invoicing');
+        return $types;
+    }
+
+    function wpinv_quote_tools_import_status_options($statuses){
+        $quote_statuses = Wpinv_Quotes_Shared::wpinv_get_quote_statuses();
+        $statuses = array_merge( $statuses, $quote_statuses );
+        $statuses['wpi-quote-pending'] = __('Quote Pending', 'invoicing');
+        return $statuses;
+    }
 }
