@@ -1824,14 +1824,103 @@ class Wpinv_Quotes_Admin
     }
 
     function wpinv_quote_tools_import_type_options($types){
-        $types['quotes'] = __('Quotes', 'invoicing');
+        $types['quotes'] = __('Quotes', 'wpinv-quotes');
         return $types;
     }
 
     function wpinv_quote_tools_import_status_options($statuses){
         $quote_statuses = Wpinv_Quotes_Shared::wpinv_get_quote_statuses();
         $statuses = array_merge( $statuses, $quote_statuses );
-        $statuses['wpi-quote-pending'] = __('Quote Pending', 'invoicing');
+        $statuses['wpi-quote-pending'] = __('Quote Pending', 'wpinv-quotes');
         return $statuses;
+    }
+
+    function wpinv_quote_import_sliced_quote($result){
+        if(is_array($result) && count($result) > 0) {
+            foreach ($result as $data) {
+                $post = get_post($data);
+
+                $user_id = get_post_meta($post->ID, '_sliced_client', true);
+
+                if(isset($user_id) && (int)$user_id > 0){
+                    $user_id = $user_id;
+                } else {
+                    $user_id = 1;
+                }
+
+                $user_data = get_userdata($user_id);
+                $user_info = array();
+                if($user_data){
+                    $user_info = array(
+                        'first_name'        => $user_data->first_name,
+                        'last_name'         => $user_data->last_name,
+                        'phone'             => '',
+                        'address'           => get_user_meta($user_data->ID, '_sliced_client_address', true),
+                        'city'              => '',
+                        'country'           => '',
+                        'state'             => '',
+                        'zip'               => '',
+                        'company'           => get_user_meta($user_data->ID, '_sliced_client_business', true),
+                        'vat_number'        => '',
+                        'discount'          => ''
+                    );
+                }
+
+                // @todo:  Changes for recurring items using add on
+                $items = get_post_meta($post->ID, '_sliced_items', true);
+                if( ! $items || $items == null || empty( $items ) || empty( $items[0] ) ) {
+                    $cart_details = array();
+                } else {
+                    foreach ( $items[0] as $value ) {
+
+                        $qty = isset( $value['qty'] ) ? $value['qty'] : 0;
+                        $amt = isset( $value['amount'] ) ? $value['amount'] : 0;
+                        $tax = isset( $value['tax'] ) ? $value['tax'] : 0;
+                        $desc = isset( $value['description'] ) ? $value['description'] : 0;
+
+                        $data = array(
+                            'type'                 => 'custom',
+                            'title'                => $desc,
+                            'custom_id'            => '',
+                            'price'                => $amt,
+                            'status'               => 'publish',
+                            'editable'             => false,
+                        );
+
+                        if(!wpinv_get_item_by('name', $value['description'])){
+                            $item = wpinv_create_item( $data, true );
+                        }
+
+                        $cart_details[] = array(
+                            'id'            => $item->ID,
+                            'quantity'      => $qty,
+                            'custom_price'  => $amt,
+                        );
+                    }
+
+                }
+
+                $new_data = array(
+                    'status'            => $this->wpinv_get_import_post_status($post->post_status),
+                    'user_id'           => $user_id,
+                    'post_date'         => $post->post_date,
+                    'cart_details'      => $cart_details,
+                    'payment_details'   => array(
+                        'gateway'           => '',
+                        'currency'          => 'USD',
+                        'transaction_id'    => ''
+                    ),
+                    'user_info'         => $user_info,
+                );
+
+                $quote = Wpinv_Quotes_Shared::wpinv_create_quote($new_data);
+
+                $quote_desc = get_post_meta($post->ID, '_sliced_description', true);
+                if(isset($quote_desc) && !empty($quote_desc)){
+                    $quote->add_note( wp_sprintf( __( 'Quote description from sliced quote: %s', 'wpinv-quotes' ), $quote_desc ) );
+                }
+
+            }
+        }
     }
 }

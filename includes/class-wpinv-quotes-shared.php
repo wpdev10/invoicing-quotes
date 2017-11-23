@@ -365,4 +365,75 @@ class Wpinv_Quotes_Shared
     public static function wpinv_sequential_number_active() {
         return wpinv_get_option( 'sequential_quote_number' );
     }
+
+    public function wpinv_create_quote($args = array(), $data = array(), $wp_error = false){
+        $default_args = array(
+            'status'        => '',
+            'user_id'       => null,
+            'user_note'     => null,
+            'quote_id'      => 0,
+            'created_via'   => '',
+            'parent'        => 0
+        );
+
+        $args           = wp_parse_args( $args, $default_args );
+        $quote_data   = array(
+            'post_type' => 'wpi_quote',
+        );
+
+        if ( $args['quote_id'] > 0 ) {
+            $updating           = true;
+            $quote_data['ID']         = $args['quote_id'];
+        } else {
+            $updating                       = false;
+            $quote_data['post_status']    = apply_filters( 'wpinv_default_invoice_status', 'wpi-pending' );
+            $quote_data['ping_status']    = 'closed';
+            $quote_data['post_author']    = !empty( $args['user_id'] ) ? $args['user_id'] : get_current_user_id();
+            $quote_data['post_title']     = wpinv_format_invoice_number( '0' );
+            $quote_data['post_parent']    = absint( $args['parent'] );
+            if ( !empty( $args['created_date'] ) ) {
+                $quote_data['post_date']      = $args['created_date'];
+                $quote_data['post_date_gmt']  = get_gmt_from_date( $args['created_date'] );
+            }
+        }
+
+        if ( $args['status'] ) {
+            if ( ! in_array( $args['status'], array_keys( self::wpinv_get_quote_statuses() ) ) ) {
+                return new WP_Error( 'wpinv_invalid_quote_status', wp_sprintf( __( 'Invalid quote status: %s', 'wpinv-quotes' ), $args['status'] ) );
+            }
+            $quote_data['post_status']    = $args['status'];
+        }
+
+        if ( ! is_null( $args['user_note'] ) ) {
+            $quote_data['post_excerpt']   = $args['user_note'];
+        }
+
+        if ( $updating ) {
+            $quote_id = wp_update_post( $quote_data, true );
+        } else {
+            $quote_id = wp_insert_post( apply_filters( 'wpinv_new_quote_data', $quote_data ), true );
+        }
+
+        if ( is_wp_error( $quote_id ) ) {
+            return $wp_error ? $quote_id : 0;
+        }
+
+        $quote = wpinv_get_invoice( $quote_id );
+
+        if ( !$updating ) {
+            update_post_meta( $quote_id, '_wpinv_key', apply_filters( 'wpinv_generate_invoice_key', uniqid( 'wpinv_' ) ) );
+            update_post_meta( $quote_id, '_wpinv_currency', wpinv_get_currency() );
+            update_post_meta( $quote_id, '_wpinv_include_tax', get_option( 'wpinv_prices_include_tax' ) );
+            update_post_meta( $quote_id, '_wpinv_user_ip', wpinv_get_ip() );
+            update_post_meta( $quote_id, '_wpinv_user_agent', wpinv_get_user_agent() );
+            update_post_meta( $quote_id, '_wpinv_created_via', sanitize_text_field( $args['created_via'] ) );
+
+            // Add invoice note
+            $quote->add_note( wp_sprintf( __( 'Quote created with status %s.', 'wpinv-quotes' ), self::wpinv_quote_status_nicename( $quote->status ) ) );
+        }
+
+        update_post_meta( $quote_id, '_wpinv_version', WPINV_VERSION );
+
+        return $quote;
+    }
 }
