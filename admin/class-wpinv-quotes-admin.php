@@ -1836,6 +1836,7 @@ class Wpinv_Quotes_Admin
     }
 
     function wpinv_quote_import_sliced_quote($result){
+
         if(is_array($result) && count($result) > 0) {
             foreach ($result as $data) {
                 $post = get_post($data);
@@ -1854,15 +1855,8 @@ class Wpinv_Quotes_Admin
                     $user_info = array(
                         'first_name'        => $user_data->first_name,
                         'last_name'         => $user_data->last_name,
-                        'phone'             => '',
                         'address'           => get_user_meta($user_data->ID, '_sliced_client_address', true),
-                        'city'              => '',
-                        'country'           => '',
-                        'state'             => '',
-                        'zip'               => '',
                         'company'           => get_user_meta($user_data->ID, '_sliced_client_business', true),
-                        'vat_number'        => '',
-                        'discount'          => ''
                     );
                 }
 
@@ -1871,55 +1865,137 @@ class Wpinv_Quotes_Admin
                 if( ! $items || $items == null || empty( $items ) || empty( $items[0] ) ) {
                     $cart_details = array();
                 } else {
-                    foreach ( $items[0] as $value ) {
+                    foreach ( $items as $value ) {
 
                         $qty = isset( $value['qty'] ) ? $value['qty'] : 0;
                         $amt = isset( $value['amount'] ) ? $value['amount'] : 0;
-                        $tax = isset( $value['tax'] ) ? $value['tax'] : 0;
-                        $desc = isset( $value['description'] ) ? $value['description'] : 0;
+                        $tax = !empty( $value['tax'] ) ? $value['tax'] : 0;
+                        $title = isset( $value['title'] ) ? $value['title'] : '';
 
                         $data = array(
-                            'type'                 => 'custom',
-                            'title'                => $desc,
-                            'custom_id'            => '',
-                            'price'                => $amt,
-                            'status'               => 'publish',
-                            'editable'             => false,
+                            'type'        => 'custom',
+                            'title'        => $title,
+                            'custom_id'   => '',
+                            'price'       => $amt,
+                            'status'      => 'publish',
+                            'editable'    => false,
                         );
 
-                        if(!wpinv_get_item_by('name', $value['description'])){
-                            $item = wpinv_create_item( $data, true );
+                        $item = wpinv_get_item_by('name', $value['title']);
+                        if(!$item) {
+                            $item = wpinv_create_item($data, true);
                         }
 
                         $cart_details[] = array(
                             'id'            => $item->ID,
                             'quantity'      => $qty,
-                            'custom_price'  => $amt,
+                            'item_price'    => $amt,
+                            'name'          => $title,
                         );
                     }
 
                 }
 
-                $new_data = array(
-                    'status'            => $this->wpinv_get_import_post_status($post->post_status),
+                $gateway = maybe_unserialize(get_post_meta($post->ID, '_sliced_payment_methods'));
+                $gateway = $this->wpinv_get_quote_import_payment_method($gateway);
+                $currency = get_post_meta($post->ID, '_sliced_currency', true);
+                $currency = 'default' === $currency ? 'USD' : $currency;
+                $valid = get_post_meta($post->ID, '_sliced_quote_valid_until', true);
+                $valid = date_i18n( 'Y-m-d', $valid );
+                $status = wp_get_post_terms( $post->ID, 'quote_status', array( 'fields' => 'names' ) );
+                $status = $this->wpinv_get_quote_import_post_status($status[0]);
+                $tax = get_post_meta($post->ID, '_sliced_tax', true);
+
+                $quote_data = array(
+                    'status'            => $status,
                     'user_id'           => $user_id,
                     'post_date'         => $post->post_date,
+                    'valid_until'       => $valid,
                     'cart_details'      => $cart_details,
                     'payment_details'   => array(
-                        'gateway'           => '',
-                        'currency'          => 'USD',
-                        'transaction_id'    => ''
+                        'gateway'       => $gateway,
+                        'gateway_title' => $this->wpinv_get_quote_import_gateway_title($gateway),
+                        'currency'      => $currency,
+                        'transaction_id'=> ''
                     ),
                     'user_info'         => $user_info,
                 );
 
-                $quote = Wpinv_Quotes_Shared::wpinv_create_quote($new_data);
+                $quote = Wpinv_Quotes_Shared::wpinv_insert_quote($quote_data, true);
 
-                $quote_desc = get_post_meta($post->ID, '_sliced_description', true);
-                if(isset($quote_desc) && !empty($quote_desc)){
-                    $quote->add_note( wp_sprintf( __( 'Quote description from sliced quote: %s', 'wpinv-quotes' ), $quote_desc ) );
+                if($quote && !is_wp_error( $quote )){
+                    $quote_desc = get_post_meta($post->ID, '_sliced_description', true);
+                    if(isset($quote_desc) && !empty($quote_desc)){
+                        $quote->add_note( wp_sprintf( __( 'Quote description from sliced quote: %s', 'wpinv-quotes' ), $quote_desc ) );
+                    }
                 }
 
+            }
+        }
+    }
+
+    public function wpinv_get_quote_import_post_status($status = 'pending'){
+
+        $map_status = array(
+            'pending' => 'wpi-quote-pending',
+            'draft' => 'wpi-pending',
+            'unpaid' => 'wpi-pending',
+            'publish' => 'publish',
+            'draft' => 'wpi-quote-pending',
+            'sent' => 'wpi-quote-pending',
+            'accepted' => 'wpi-quote-accepted',
+            'cancelled' => 'wpi-quote-declined',
+            'declined' => 'wpi-quote-declined',
+            'expired' => 'wpi-quote-declined',
+        );
+
+        foreach ( $map_status as $from => $to ) {
+            if ( $status == $from ) {
+                return $map_status[ $from ];
+            } else {
+                return 'wpi-quote-pending';
+            }
+        }
+    }
+
+    public function wpinv_get_quote_import_payment_method($gateway = 'manual'){
+
+        $map_gateways = array(
+            'manual' => 'manual',
+            'generic' => 'manual',
+            'bank' => 'bank_transfer',
+            'paypal' => 'paypal',
+            '2checkout' => '2co',
+            'braintree' => 'paypal',
+            'stripe' => 'stripe',
+        );
+
+        foreach ( $map_gateways as $from => $to ) {
+            if ( $gateway == $from ) {
+                return $map_gateways[ $from ];
+            } else {
+                return 'manual';
+            }
+        }
+    }
+
+    public function wpinv_get_quote_import_gateway_title($gateway = 'manual'){
+
+        $map_gateways_title = array(
+            'manual' => __( 'Test Payment', 'invoicing' ),
+            'generic' => __( 'Test Payment', 'invoicing' ),
+            'bank' => __( 'Pre Bank Transfer', 'invoicing' ),
+            'paypal' => __( 'PayPal Standard', 'invoicing' ),
+            '2checkout' => __( '2Checkout - Credit / Debit Card', 'invoicing' ),
+            'braintree' => __( 'Braintree', 'invoicing' ),
+            'stripe' => __( 'Stripe Payment', 'invoicing' ),
+        );
+
+        foreach ( $map_gateways_title as $from => $to ) {
+            if ( $gateway == $from ) {
+                return $map_gateways_title[ $from ];
+            } else {
+                return __( 'Test Payment', 'invoicing' );
             }
         }
     }

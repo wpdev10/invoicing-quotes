@@ -366,7 +366,7 @@ class Wpinv_Quotes_Shared
         return wpinv_get_option( 'sequential_quote_number' );
     }
 
-    public function wpinv_create_quote($args = array(), $data = array(), $wp_error = false){
+    public static function wpinv_create_quote($args = array(), $wp_error = false){
         $default_args = array(
             'status'        => '',
             'user_id'       => null,
@@ -376,20 +376,19 @@ class Wpinv_Quotes_Shared
             'parent'        => 0
         );
 
-        $args           = wp_parse_args( $args, $default_args );
-        $quote_data   = array(
-            'post_type' => 'wpi_quote',
-        );
+        $args         = wp_parse_args( $args, $default_args );
+        $quote_data   = array();
+        $quote_data['post_type']  = 'wpi_quote';
 
         if ( $args['quote_id'] > 0 ) {
-            $updating           = true;
+            $updating                 = true;
             $quote_data['ID']         = $args['quote_id'];
         } else {
-            $updating                       = false;
-            $quote_data['post_status']    = apply_filters( 'wpinv_default_invoice_status', 'wpi-pending' );
+            $updating                     = false;
+            $quote_data['post_status']    = apply_filters( 'wpinv_default_quote_status', 'wpi-quote-pending' );
             $quote_data['ping_status']    = 'closed';
             $quote_data['post_author']    = !empty( $args['user_id'] ) ? $args['user_id'] : get_current_user_id();
-            $quote_data['post_title']     = wpinv_format_invoice_number( '0' );
+            $quote_data['post_title']     = '';
             $quote_data['post_parent']    = absint( $args['parent'] );
             if ( !empty( $args['created_date'] ) ) {
                 $quote_data['post_date']      = $args['created_date'];
@@ -398,7 +397,7 @@ class Wpinv_Quotes_Shared
         }
 
         if ( $args['status'] ) {
-            if ( ! in_array( $args['status'], array_keys( self::wpinv_get_quote_statuses() ) ) ) {
+            if ( ! in_array( $args['status'], array_keys( self::$quote_statuses ) ) ) {
                 return new WP_Error( 'wpinv_invalid_quote_status', wp_sprintf( __( 'Invalid quote status: %s', 'wpinv-quotes' ), $args['status'] ) );
             }
             $quote_data['post_status']    = $args['status'];
@@ -421,19 +420,231 @@ class Wpinv_Quotes_Shared
         $quote = wpinv_get_invoice( $quote_id );
 
         if ( !$updating ) {
-            update_post_meta( $quote_id, '_wpinv_key', apply_filters( 'wpinv_generate_invoice_key', uniqid( 'wpinv_' ) ) );
+            update_post_meta( $quote_id, '_wpinv_key', apply_filters( 'wpinv_generate_quote_key', uniqid( 'wpinv_' ) ) );
             update_post_meta( $quote_id, '_wpinv_currency', wpinv_get_currency() );
             update_post_meta( $quote_id, '_wpinv_include_tax', get_option( 'wpinv_prices_include_tax' ) );
             update_post_meta( $quote_id, '_wpinv_user_ip', wpinv_get_ip() );
             update_post_meta( $quote_id, '_wpinv_user_agent', wpinv_get_user_agent() );
             update_post_meta( $quote_id, '_wpinv_created_via', sanitize_text_field( $args['created_via'] ) );
 
-            // Add invoice note
-            $quote->add_note( wp_sprintf( __( 'Quote created with status %s.', 'wpinv-quotes' ), self::wpinv_quote_status_nicename( $quote->status ) ) );
+            // Add quote note
+            $quote->add_note( wp_sprintf( __( 'Quote created with status %s.', 'wpinv-quotes' ), wpinv_status_nicename( $quote->status ) ) );
         }
 
         update_post_meta( $quote_id, '_wpinv_version', WPINV_VERSION );
 
         return $quote;
+    }
+
+    public static function wpinv_insert_quote($quote_data = array(), $wp_error = false){
+        if ( empty( $quote_data ) ) {
+            return false;
+        }
+
+        if ( !( !empty( $quote_data['cart_details'] ) && is_array( $quote_data['cart_details'] ) ) ) {
+            return $wp_error ? new WP_Error( 'wpinv_invalid_items', __( 'Quote must have at least one item.', 'wpinv-quotes' ) ) : 0;
+        }
+
+        if ( empty( $quote_data['user_id'] ) ) {
+            $quote_data['user_id'] = get_current_user_id();
+        }
+
+        $quote_data['quote_id'] = !empty( $quote_data['quote_id'] ) ? (int)$quote_data['quote_id'] : 0;
+
+        if ( empty( $quote_data['status'] ) ) {
+            $quote_data['status'] = 'wpi-quote-pending';
+        }
+
+        if ( empty( $quote_data['ip'] ) ) {
+            $quote_data['ip'] = wpinv_get_ip();
+        }
+
+        $quote = self::wpinv_create_quote( $quote_data, true );
+
+        if ( is_wp_error( $quote ) ) {
+            return $wp_error ? $quote : 0;
+        }
+
+        // User info
+        $default_user_info = array(
+            'user_id'               => '',
+            'first_name'            => '',
+            'last_name'             => '',
+            'email'                 => '',
+            'company'               => '',
+            'phone'                 => '',
+            'address'               => '',
+            'city'                  => '',
+            'country'               => wpinv_get_default_country(),
+            'state'                 => wpinv_get_default_state(),
+            'zip'                   => '',
+            'vat_number'            => '',
+            'vat_rate'              => '',
+            'adddress_confirmed'    => '',
+            'discount'              => array(),
+        );
+
+        if ( $user_id = (int)$quote->get_user_id() ) {
+            if ( $user_address = wpinv_get_user_address( $user_id ) ) {
+                $default_user_info = wp_parse_args( $user_address, $default_user_info );
+            }
+        }
+
+        if ( empty( $quote_data['user_info'] ) ) {
+            $quote_data['user_info'] = array();
+        }
+
+        $user_info = wp_parse_args( $quote_data['user_info'], $default_user_info );
+
+        if ( empty( $user_info['first_name'] ) ) {
+            $user_info['first_name'] = $default_user_info['first_name'];
+            $user_info['last_name'] = $default_user_info['last_name'];
+        }
+
+        if ( empty( $user_info['country'] ) ) {
+            $user_info['country'] = $default_user_info['country'];
+            $user_info['state'] = $default_user_info['state'];
+            $user_info['city'] = $default_user_info['city'];
+            $user_info['address'] = $default_user_info['address'];
+            $user_info['zip'] = $default_user_info['zip'];
+            $user_info['phone'] = $default_user_info['phone'];
+        }
+
+        if ( !empty( $user_info['discount'] ) && !is_array( $user_info['discount'] ) ) {
+            $user_info['discount'] = (array)$user_info['discount'];
+        }
+
+        // Payment details
+        $payment_details = array();
+        if ( !empty( $quote_data['payment_details'] ) ) {
+            $default_payment_details = array(
+                'gateway'           => 'manual',
+                'gateway_title'     => '',
+                'currency'          => wpinv_get_default_country(),
+                'transaction_id'    => '',
+            );
+
+            $payment_details = wp_parse_args( $quote_data['payment_details'], $default_payment_details );
+
+            if ( empty( $payment_details['gateway_title'] ) ) {
+                $payment_details['gateway_title'] = wpinv_get_gateway_checkout_label( $payment_details['gateway'] );
+            }
+        }
+
+        $quote->set( 'status', ( !empty( $quote_data['status'] ) ? $quote_data['status'] : 'wpi-quote-pending' ) );
+
+        if ( !empty( $payment_details ) ) {
+            $quote->set( 'currency', $payment_details['currency'] );
+            $quote->set( 'gateway', $payment_details['gateway'] );
+            $quote->set( 'gateway_title', $payment_details['gateway_title'] );
+            $quote->set( 'transaction_id', $payment_details['transaction_id'] );
+        }
+
+        $quote->set( 'user_info', $user_info );
+        $quote->set( 'first_name', $user_info['first_name'] );
+        $quote->set( 'last_name', $user_info['last_name'] );
+        $quote->set( 'address', $user_info['address'] );
+        $quote->set( 'company', $user_info['company'] );
+        $quote->set( 'vat_number', $user_info['vat_number'] );
+        $quote->set( 'phone', $user_info['phone'] );
+        $quote->set( 'city', $user_info['city'] );
+        $quote->set( 'country', $user_info['country'] );
+        $quote->set( 'state', $user_info['state'] );
+        $quote->set( 'zip', $user_info['zip'] );
+        $quote->set( 'discounts', $user_info['discount'] );
+        $quote->set( 'ip', ( !empty( $quote_data['ip'] ) ? $quote_data['ip'] : wpinv_get_ip() ) );
+        $quote->set( 'mode', ( wpinv_is_test_mode() ? 'test' : 'live' ) );
+        $quote->set( 'parent_invoice', ( !empty( $quote_data['parent'] ) ? absint( $quote_data['parent'] ) : '' ) );
+
+        if ( !empty( $quote_data['cart_details'] ) && is_array( $quote_data['cart_details'] ) ) {
+            foreach ( $quote_data['cart_details'] as $key => $item ) {
+                $item_id        = !empty( $item['id'] ) ? $item['id'] : 0;
+                $quantity       = !empty( $item['quantity'] ) ? $item['quantity'] : 1;
+                $name           = !empty( $item['name'] ) ? $item['name'] : '';
+                $item_price     = isset( $item['item_price'] ) ? $item['item_price'] : '';
+
+                $post_item  = new WPInv_Item( $item_id );
+                if ( !empty( $post_item ) ) {
+                    $name       = !empty( $name ) ? $name : $post_item->get_name();
+                    $item_price = $item_price !== '' ? $item_price : $post_item->get_price();
+                } else {
+                    continue;
+                }
+
+                $args = array(
+                    'name'          => $name,
+                    'quantity'      => $quantity,
+                    'item_price'    => $item_price,
+                    'custom_price'  => isset( $item['custom_price'] ) ? $item['custom_price'] : '',
+                    'tax'           => !empty( $item['tax'] ) ? $item['tax'] : 0.00,
+                    'discount'      => isset( $item['discount'] ) ? $item['discount'] : 0,
+                    'meta'          => isset( $item['meta'] ) ? $item['meta'] : array(),
+                    'fees'          => isset( $item['fees'] ) ? $item['fees'] : array(),
+                );
+
+                $quote->add_item( $item_id, $args );
+            }
+        }
+
+        $quote->increase_tax( wpinv_get_cart_fee_tax() );
+
+        if ( isset( $quote_data['post_date'] ) ) {
+            $quote->set( 'date', $quote_data['post_date'] );
+        }
+
+        // Invoice due date
+        if ( isset( $quote_data['valid_until'] ) ) {
+            update_post_meta($quote->ID, 'wpinv_quote_valid_until', $quote_data['valid_until']);
+        }
+
+        $quote->save();
+
+        // Add notes
+        if ( !empty( $quote_data['private_note'] ) ) {
+            $quote->add_note( $quote_data['private_note'] );
+        }
+        if ( !empty( $quote_data['user_note'] ) ) {
+            $quote->add_note( $quote_data['user_note'], true );
+        }
+
+        do_action( 'wpinv_insert_quote', $quote->ID, $quote_data );
+
+        if ( ! empty( $quote->ID ) ) {
+            global $wpi_userID, $wpinv_ip_address_country;
+
+            $checkout_session = wpinv_get_checkout_session();
+
+            $data_session                   = array();
+            $data_session['invoice_id']     = $quote->ID;
+            $data_session['cart_discounts'] = $quote->get_discounts( true );
+
+            wpinv_set_checkout_session( $data_session );
+
+            $wpi_userID         = (int)$quote->get_user_id();
+
+            $_POST['country']   = !empty( $quote->country ) ? $quote->country : wpinv_get_default_country();
+            $_POST['state']     = $quote->state;
+
+            $quote->set( 'country', sanitize_text_field( $_POST['country'] ) );
+            $quote->set( 'state', sanitize_text_field( $_POST['state'] ) );
+
+            $wpinv_ip_address_country = $quote->country;
+
+            $quote = $quote->recalculate_totals( true );
+
+            wpinv_set_checkout_session( $checkout_session );
+
+            return $quote;
+        }
+
+        if ( $wp_error ) {
+            if ( is_wp_error( $quote ) ) {
+                return $quote;
+            } else {
+                return new WP_Error( 'wpinv_insert_quote_error', __( 'Error while inserting quote.', 'wpinv-quotes' ) );
+            }
+        } else {
+            return 0;
+        }
     }
 }
