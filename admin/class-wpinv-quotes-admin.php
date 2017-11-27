@@ -1837,8 +1837,14 @@ class Wpinv_Quotes_Admin
 
     function wpinv_quote_import_sliced_quote($result){
 
+        $exclude_ids = get_option('wpinv_imported_ids', array());
+        $imported_ids = array();
         if(is_array($result) && count($result) > 0) {
             foreach ($result as $data) {
+                if(in_array($data, $exclude_ids)){
+                    continue;
+                }
+
                 $post = get_post($data);
 
                 $user_id = get_post_meta($post->ID, '_sliced_client', true);
@@ -1869,8 +1875,8 @@ class Wpinv_Quotes_Admin
 
                         $qty = isset( $value['qty'] ) ? $value['qty'] : 0;
                         $amt = isset( $value['amount'] ) ? $value['amount'] : 0;
-                        $tax = !empty( $value['tax'] ) ? $value['tax'] : 0;
                         $title = isset( $value['title'] ) ? $value['title'] : '';
+                        $tax = isset( $value['tax'] ) ? $value['tax'] : '';
 
                         $data = array(
                             'type'        => 'custom',
@@ -1891,6 +1897,7 @@ class Wpinv_Quotes_Admin
                             'quantity'      => $qty,
                             'item_price'    => $amt,
                             'name'          => $title,
+                            'vat_rate'      => $tax,
                         );
                     }
 
@@ -1904,7 +1911,7 @@ class Wpinv_Quotes_Admin
                 $valid = date_i18n( 'Y-m-d', $valid );
                 $status = wp_get_post_terms( $post->ID, 'quote_status', array( 'fields' => 'names' ) );
                 $status = $this->wpinv_get_quote_import_post_status($status[0]);
-                $tax = get_post_meta($post->ID, '_sliced_tax', true);
+                $tax = get_post_meta($post->ID, '_sliced_tax', true); // Need to work on
 
                 $quote_data = array(
                     'status'            => $status,
@@ -1928,8 +1935,17 @@ class Wpinv_Quotes_Admin
                     if(isset($quote_desc) && !empty($quote_desc)){
                         $quote->add_note( wp_sprintf( __( 'Quote description from sliced quote: %s', 'wpinv-quotes' ), $quote_desc ) );
                     }
+
+                    $imported_ids[] = $post->ID;
                 }
 
+            }
+
+            if($imported_ids && count($imported_ids) > 0){
+                $prev_ids = get_option('wpinv_imported_ids', $imported_ids);
+                $update_ids = array_merge($prev_ids, $imported_ids);
+                update_option('wpinv_imported_ids', $update_ids);
+                wpinv_error_log('Quote converted from sliced quote to WPI:'.implode(',',$imported_ids) , 'Import Tools', __FILE__, __LINE__);
             }
         }
     }
