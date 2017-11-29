@@ -1908,7 +1908,7 @@ class Wpinv_Quotes_Admin
                 $currency = get_post_meta($post->ID, '_sliced_currency', true);
                 $currency = 'default' === $currency ? 'USD' : $currency;
                 $valid = get_post_meta($post->ID, '_sliced_quote_valid_until', true);
-                $valid = date_i18n( 'Y-m-d', $valid );
+                $valid = date_i18n( 'Y-m-d', (int)$valid );
                 $status = wp_get_post_terms( $post->ID, 'quote_status', array( 'fields' => 'names' ) );
                 $status = $this->wpinv_get_quote_import_post_status($status[0]);
                 $tax = get_post_meta($post->ID, '_sliced_tax', true); // Need to work on
@@ -1950,19 +1950,274 @@ class Wpinv_Quotes_Admin
         }
     }
 
+    public function wpinv_quote_import_sprout_estimate($result){
+
+        $exclude_ids = get_option('wpinv_imported_ids', array());
+        $imported_ids = array();
+
+        if(is_array($result) && count($result) > 0) {
+            foreach ($result as $data) {
+                if(in_array($data, $exclude_ids)){
+                    continue;
+                }
+
+                $post = get_post($data);
+
+                $user_id = get_post_meta($post->ID, '_client_id', true);
+                $user_ids = '';
+                if('create_client' != $user_id){
+                    $user_ids = get_post_meta($user_id, '_associated_users', true);
+                }
+                if(isset($user_ids) && !empty($user_ids)){
+                    if ( is_array( $user_ids ) ) {
+                        $user_id = $user_ids[0];
+                    } else{
+                        $user_id = $user_ids;
+                    }
+                    $address = get_post_meta($user_id, '_address', true);
+                } else {
+                    $user_id = 1;
+                }
+
+                $user_data = get_userdata($user_id);
+                $user_info = array();
+                if($user_data){
+                    $user_info = array(
+                        'first_name'        => $user_data->first_name,
+                        'last_name'         => $user_data->last_name,
+                        'address'           => $address ? $address : '',
+                    );
+                }
+
+                // @todo:  Changes for recurring items
+                $items = get_post_meta($post->ID, '_doc_line_items', true);
+
+                if( ! $items || $items == null || empty( $items ) ) {
+                    $cart_details = array();
+                } else {
+                    foreach ( $items as $item ) {
+
+                        $qty = isset( $item['qty'] ) ? $item['qty'] : 0;
+                        $amt = isset( $item['rate'] ) ? $item['rate'] : 0;
+                        $title = isset( $item['desc'] ) ? $item['desc'] : '';
+                        $tax = isset( $item['tax'] ) ? $item['tax'] : '';
+
+                        $data = array(
+                            'type'        => 'custom',
+                            'title'        => $title,
+                            'custom_id'   => '',
+                            'price'       => $amt,
+                            'status'      => 'publish',
+                            'editable'    => false,
+                        );
+
+                        $item = wpinv_get_item_by('name', $item['desc']);
+                        if(!$item) {
+                            $item = wpinv_create_item($data, true);
+                        }
+
+                        $cart_details[] = array(
+                            'id'            => $item->ID,
+                            'quantity'      => $qty,
+                            'item_price'    => $amt,
+                            'name'          => $title,
+                            'vat_rate'      => $tax,
+                        );
+                    }
+
+                }
+
+                $gateway = $this->wpinv_get_quote_import_payment_method(get_post_meta($post->ID, 'default_payment_method'));
+                $currency = get_post_meta($post->ID, '_doc_currency', true);
+                $due_date = get_post_meta($post->ID, '_due_date', true);
+                $due_date = date_i18n( 'Y-m-d', $due_date);
+                $tax = get_post_meta($post->ID, '_doc_tax', true); // @todo Tax calculation based on wp invoice
+                $discount = get_post_meta($post->ID, '_doc_discount', true); // @todo Discount calculation based on wp invoice
+
+                $quote_data = array(
+                    'status'            => $this->wpinv_get_quote_import_post_status($post->post_status),
+                    'user_id'           => $user_id,
+                    'post_date'         => $post->post_date,
+                    'due_date'          => $due_date,
+                    'cart_details'      => $cart_details,
+                    'payment_details'   => array(
+                        'gateway'       => $gateway,
+                        'gateway_title' => $this->wpinv_get_quote_import_gateway_title($gateway),
+                        'currency'      => $currency,
+                        'transaction_id'=> ''
+                    ),
+                    'user_info'         => $user_info,
+                );
+
+                $quote = Wpinv_Quotes_Shared::wpinv_insert_quote($quote_data, true);
+
+                if($quote && !is_wp_error( $quote )) {
+
+                    $imported_ids[] = $post->ID;
+                }
+
+            }
+
+            if($imported_ids && count($imported_ids) > 0){
+                $prev_ids = get_option('wpinv_imported_ids', $imported_ids);
+                $update_ids = array_merge($prev_ids, $imported_ids);
+                update_option('wpinv_imported_ids', $update_ids);
+                wpinv_error_log('Quote(s) converted from sprout quote to WPI:'.implode(',',$imported_ids) , 'Import Tools', __FILE__, __LINE__);
+            }
+        }
+
+        return true;
+    }
+
+    public function wpinv_quote_import_wpi_object_quote($result){
+        $exclude_ids = get_option('wpinv_imported_ids', array());
+        $imported_ids = array();
+
+        if(is_array($result) && count($result) > 0) {
+            foreach ($result as $data) {
+                if(in_array($data, $exclude_ids)){
+                    continue;
+                }
+
+                $post = get_post($data);
+
+                $company = '';
+                $address = '';
+                $user_data = get_post_meta($post->ID, 'user_data', true);
+                if(!empty($user_data)){
+                    $user_id = $user_data['ID'];
+                    $company = $user_data['company_name'];
+                    $address = $user_data['streetaddress'];
+                } else {
+                    $user_email = get_post_meta($post->ID, 'user_email', true);
+                    $user = get_user_by( 'email', $user_email );
+                    $user_id = $user->ID;
+                }
+
+                if(isset($user_id) && (int)$user_id > 0){
+                    $user_id = $user_id;
+                } else {
+                    $user_id = 1;
+                }
+
+                $user_data = get_userdata($user_id);
+                $user_info = array();
+                if($user_data){
+                    $user_info = array(
+                        'first_name'        => $user_data->first_name,
+                        'last_name'         => $user_data->last_name,
+                        'address'           => $address ? $address : '',
+                        'company'           => $company ? $company : '',
+                    );
+                }
+
+                // @todo:  Changes for recurring items
+                $items = get_post_meta($post->ID, 'itemized_list', true);
+
+                if( ! $items || $items == null || empty( $items ) ) {
+                    $cart_details = array();
+                } else {
+                    foreach ( $items as $item ) {
+
+                        $qty = isset( $item['quantity'] ) ? $item['quantity'] : 0;
+                        $amt = isset( $item['price'] ) ? $item['price'] : 0;
+                        $title = isset( $item['name'] ) ? $item['name'] : '';
+                        $tax = isset( $item['tax_rate'] ) ? $item['tax_rate'] : '';
+
+                        $data = array(
+                            'type'        => 'custom',
+                            'title'        => $title,
+                            'custom_id'   => '',
+                            'price'       => $amt,
+                            'status'      => 'publish',
+                            'editable'    => false,
+                        );
+
+                        $item = wpinv_get_item_by('name', $item['name']);
+                        if(!$item) {
+                            $item = wpinv_create_item($data, true);
+                        }
+
+                        $cart_details[] = array(
+                            'id'            => $item->ID,
+                            'quantity'      => $qty,
+                            'item_price'    => $amt,
+                            'name'          => $title,
+                            'vat_rate'      => $tax,
+                        );
+                    }
+
+                }
+
+                $gateway = $this->wpinv_get_quote_import_payment_method(get_post_meta($post->ID, 'default_payment_method'));
+                $currency = get_post_meta($post->ID, 'default_currency_code', true);
+
+                $due_day = get_post_meta($post->ID, 'due_date_day', true);
+                $due_month = get_post_meta($post->ID, 'due_date_month', true);
+                $due_year = get_post_meta($post->ID, 'due_date_year', true);
+
+                $valid_until_date = date_i18n( 'Y-m-d', strtotime( $due_year.'-'.$due_month.'-'.$due_day ) );
+                $tax = get_post_meta($post->ID, 'total_tax', true); // @todo Tax calculation based on wp invoice
+                $discount = get_post_meta($post->ID, 'discount', true); // @todo Discount calculation based on wp invoice
+
+                $quote_data = array(
+                    'status'            => $this->wpinv_get_quote_import_post_status($post->post_status),
+                    'user_id'           => $user_id,
+                    'post_date'         => $post->post_date,
+                    'valid_until'       => $valid_until_date,
+                    'cart_details'      => $cart_details,
+                    'payment_details'   => array(
+                        'gateway'       => $gateway,
+                        'gateway_title' => $this->wpinv_get_quote_import_gateway_title($gateway),
+                        'currency'      => $currency,
+                        'transaction_id'=> ''
+                    ),
+                    'user_info'         => $user_info,
+                );
+
+                $quote = Wpinv_Quotes_Shared::wpinv_insert_quote($quote_data, true);
+
+                if($quote && !is_wp_error( $quote )) {
+                    $quote_desc = $post->post_content;
+                    if (isset($quote_desc) && !empty($quote_desc)) {
+                        $quote->add_note(wp_sprintf(__('Quote description from wp-invoice: %s', 'wpinv-quotes'), $quote_desc));
+                    }
+
+                    $imported_ids[] = $post->ID;
+                }
+
+            }
+
+            if($imported_ids && count($imported_ids) > 0){
+                $prev_ids = get_option('wpinv_imported_ids', $imported_ids);
+                $update_ids = array_merge($prev_ids, $imported_ids);
+                update_option('wpinv_imported_ids', $update_ids);
+                wpinv_error_log('Quote converted from wp-invoice quote to WPI:'.implode(',',$imported_ids) , 'Import Tools', __FILE__, __LINE__);
+            }
+        }
+
+        return true;
+    }
     public function wpinv_get_quote_import_post_status($status = 'pending'){
 
         $map_status = array(
             'pending' => 'wpi-quote-pending',
-            'draft' => 'wpi-pending',
-            'unpaid' => 'wpi-pending',
-            'publish' => 'publish',
+            'draft' => 'wpi-quote-pending',
+            'unpaid' => 'wpi-quote-pending',
             'draft' => 'wpi-quote-pending',
             'sent' => 'wpi-quote-pending',
+            'active' => 'wpi-quote-pending',
+            'temp' => 'wpi-quote-pending',
+            'request' => 'wpi-quote-pending',
+            'future' => 'wpi-quote-pending',
+            'publish' => 'wpi-quote-pending',
+            'approved' => 'wpi-quote-accepted',
             'accepted' => 'wpi-quote-accepted',
             'cancelled' => 'wpi-quote-declined',
             'declined' => 'wpi-quote-declined',
             'expired' => 'wpi-quote-declined',
+            'archived'  => 'trash',
+            'trash'     => 'trash',
         );
 
         foreach ( $map_status as $from => $to ) {
@@ -1974,6 +2229,7 @@ class Wpinv_Quotes_Admin
         }
     }
 
+
     public function wpinv_get_quote_import_payment_method($gateway = 'manual'){
 
         $map_gateways = array(
@@ -1981,9 +2237,13 @@ class Wpinv_Quotes_Admin
             'generic' => 'manual',
             'bank' => 'bank_transfer',
             'paypal' => 'paypal',
+            'wpi_paypal' => 'paypal',
             '2checkout' => '2co',
+            'wpi_twocheckout' => '2co',
             'braintree' => 'paypal',
             'stripe' => 'stripe',
+            'wpi_stripe' => 'stripe',
+            'wpi_authorize' => 'authorizenet',
         );
 
         foreach ( $map_gateways as $from => $to ) {
@@ -1998,20 +2258,20 @@ class Wpinv_Quotes_Admin
     public function wpinv_get_quote_import_gateway_title($gateway = 'manual'){
 
         $map_gateways_title = array(
-            'manual' => __( 'Test Payment', 'invoicing' ),
-            'generic' => __( 'Test Payment', 'invoicing' ),
-            'bank' => __( 'Pre Bank Transfer', 'invoicing' ),
-            'paypal' => __( 'PayPal Standard', 'invoicing' ),
-            '2checkout' => __( '2Checkout - Credit / Debit Card', 'invoicing' ),
-            'braintree' => __( 'Braintree', 'invoicing' ),
-            'stripe' => __( 'Stripe Payment', 'invoicing' ),
+            'manual' => __( 'Test Payment', 'wpinv-quotes' ),
+            'generic' => __( 'Test Payment', 'wpinv-quotes' ),
+            'bank' => __( 'Pre Bank Transfer', 'wpinv-quotes' ),
+            'paypal' => __( 'PayPal Standard', 'wpinv-quotes' ),
+            '2checkout' => __( '2Checkout - Credit / Debit Card', 'wpinv-quotes' ),
+            'braintree' => __( 'Braintree', 'wpinv-quotes' ),
+            'stripe' => __( 'Stripe Payment', 'wpinv-quotes' ),
         );
 
         foreach ( $map_gateways_title as $from => $to ) {
             if ( $gateway == $from ) {
                 return $map_gateways_title[ $from ];
             } else {
-                return __( 'Test Payment', 'invoicing' );
+                return __( 'Test Payment', 'wpinv-quotes' );
             }
         }
     }

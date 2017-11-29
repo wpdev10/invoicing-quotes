@@ -218,6 +218,8 @@ class Wpinv_Quotes
         $this->loader->add_action('wpinv_tools_import_type_options', $plugin_admin, 'wpinv_quote_tools_import_type_options', 10, 1);
         $this->loader->add_action('wpinv_tools_import_status_options', $plugin_admin, 'wpinv_quote_tools_import_status_options', 10, 1);
         $this->loader->add_action('wpinv_import_sliced_quote', $plugin_admin, 'wpinv_quote_import_sliced_quote', 10, 1);
+        $this->loader->add_action('wpinv_import_sprout_estimate', $plugin_admin, 'wpinv_quote_import_sprout_estimate', 10, 1);
+        $this->loader->add_action('wpinv_import_wpinvoice_wpi_object_quote', $plugin_admin, 'wpinv_quote_import_wpi_object_quote', 10, 1);
 
         if ( is_admin() && get_option( 'activated_quotes' ) == 'wpinv-quotes' ) { // update wpinv_settings on activation
             $this->loader->add_action('admin_init', $plugin_admin, 'wpinv_quote_update_settings', 99);
