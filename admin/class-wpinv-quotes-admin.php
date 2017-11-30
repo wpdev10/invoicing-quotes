@@ -1897,7 +1897,7 @@ class Wpinv_Quotes_Admin
                             'quantity'      => $qty,
                             'item_price'    => $amt,
                             'name'          => $title,
-                            'vat_rate'      => $tax,
+                            'tax'      => $tax,
                         );
                     }
 
@@ -2021,7 +2021,7 @@ class Wpinv_Quotes_Admin
                             'quantity'      => $qty,
                             'item_price'    => $amt,
                             'name'          => $title,
-                            'vat_rate'      => $tax,
+                            'discount'      => $tax,
                         );
                     }
 
@@ -2143,7 +2143,7 @@ class Wpinv_Quotes_Admin
                             'quantity'      => $qty,
                             'item_price'    => $amt,
                             'name'          => $title,
-                            'vat_rate'      => $tax,
+                            'tax'           => $tax,
                         );
                     }
 
