@@ -124,6 +124,8 @@ class Wpinv_Quotes_Shared
     public static function wpinv_quote_status_nicename($status)
     {
         $statuses = self::$quote_statuses;
+        $invoice_statuses = wpinv_get_invoice_statuses();
+        $statuses = array_merge($statuses, $invoice_statuses);
         $status = isset($statuses[$status]) ? $statuses[$status] : __($status, 'wpinv-quotes');
 
         return $status;
